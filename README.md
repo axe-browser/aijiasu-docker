@@ -1,68 +1,10 @@
-# 爱加速 (Aijiasu) Docker 独立代理服务 (精简高可用版)
+# 爱加速 Docker SOCKS5 代理
 
-## 斧头浏览器插件模式
+本项目在 Docker 容器中运行爱加速官方 Linux 客户端，由 Go 命令行工具管理登录、节点切换和 SOCKS5 端口桥接。普通模式管理一个容器；[桌面插件模式](#斧头浏览器插件模式)可按实例管理多个容器。
 
-桌面端可使用 `aijiasu embedded` 托管多个独立代理实例。此模式仅通过标准输入/输出通信，不启动 HTTP 服务，不读取或保存宿主机 `.env`，不会接管普通 CLI 创建的容器。原有 CLI 和 HTTP 接口保持原有行为。
+普通模式默认将代理映射到宿主机 `127.0.0.1:1080`。管理端提供 Linux、macOS、Windows 的 amd64 和 arm64 版本；桌面插件发布脚本目前只生成 macOS arm64 包。
 
-宿主向 stdin 写入一个 JSON 对象并关闭输入；插件输出唯一 JSON 响应并退出。协议是 `aijiasu-stdio-v1`：
-
-```json
-{
-  "protocol": "aijiasu-stdio-v1",
-  "action": "start",
-  "dataDir": "/absolute/private/runtime/1",
-  "instanceId": "axe-aijiasu-123456789abc-1",
-  "instanceIndex": 1,
-  "proxyPort": 21081,
-  "dockerPath": "/absolute/path/to/docker",
-  "username": "YOUR_ACCOUNT",
-  "password": "YOUR_PASSWORD"
-}
-```
-
-- `action` 支持 `start`、`status`、`stop`、`nodes`、`switch`；账号密码只允许出现在 `start` 中。凭据通过管道传递，不能放入命令行参数、环境变量或日志。
-- 宿主须先确认 Docker daemon 为本机实例，将经过验证的 `DOCKER_HOST=unix:///绝对路径` 传入插件；插件保留该连接且不向 Docker 传递 `DOCKER_CONTEXT`，拒绝未确认或远程连接。Docker Desktop 未运行时由桌面宿主负责启动并等待就绪。
-- `dataDir` 是该实例专属的绝对目录；首次启动只能使用不存在或空目录。目录标记、Compose 项目、容器名称、归属 label 和本机端口必须匹配，否则拒绝接管。目录路径不能包含符号链接。
-- `instanceIndex` 为 1–20，必须与 `instanceId` 后缀一致；这是桌面的资源上限，不代表账号许可的并发数。`start` 可附带 `nodeId` 精确选择节点；未指定时仍选择节点列表中的对应项。所选节点不可用、节点不足或账号登录失败时明确报错。节点列表可能变化，多个节点也不保证出口 IP 不同。
-- `start` 非交互生成自己的 Docker 资源，构建镜像、启动容器、通过 `docker exec -i` 向容器内权限为 `0600` 的配置注入凭据并登录，再连接节点。托管容器使用单独的待命入口，不执行普通 CLI 启动脚本的自动登录/默认连接。只有 SOCKS5 握手成功才返回 `running`。普通启动失败或超时后尝试停止已验证归属的容器，并报告无法确认清理的情况。
-- 关闭桌面导致的 SIGTERM/取消只终止当前 Docker 控制命令，保留已创建的代理容器，避免中断浏览器环境；下次打开可通过 `status` 检查。启动尚未完成时被取消的容器可能处于未连接状态，须重新启动或显式停止。
-- `nodes` 查询已启动并登录实例的实时可用节点，返回 `nodes:[{id,name,province,city}]`；未启动时明确报错。`switch` 必须提供完整的 `nodeId`，只连接当前列表中 ID 完全匹配的节点，成功后返回更新的 `instance`。这两项操作不接受账号密码。
-- `status` 仅检查实例与代理健康，通过容器内监听进程的命令行核验当前节点，健康时通过该代理查询出口 IP；不会启动容器或修复桥接。当前节点无法核实时返回 `status:error`，不会将历史记录当作当前节点。`stop` 只停止此实例容器，保留运行数据、镜像及其他 Docker 容器。不存在的实例返回 `stopped`。
-- Docker 命令有限时和输出大小限制；`start` 总限时 9 分钟，`switch` 90 秒，其他操作 35 秒。协议错误以 `ok:false` 和安全中文消息返回，进程正常退出 `0`；不可将退出 `0` 单独视为操作成功。
-
-成功响应：
-
-```json
-{"protocol":"aijiasu-stdio-v1","ok":true,"instance":{"id":"axe-aijiasu-123456789abc-1","status":"running","proxy":"socks5://127.0.0.1:21081","exitIp":"203.0.113.10","nodeId":"vvn-example"}}
-```
-
-`nodes` 成功响应沿用同一协议，并附带节点列表；`switch` 使用上面的实例响应格式：
-
-```json
-{"protocol":"aijiasu-stdio-v1","ok":true,"instance":{"id":"axe-aijiasu-123456789abc-1","status":"running","proxy":"socks5://127.0.0.1:21081","exitIp":"203.0.113.10","nodeId":"vvn-example"},"nodes":[{"id":"vvn-example","name":"广东广州 #01","province":"广东","city":"广州"}]}
-```
-
-失败响应：
-
-```json
-{"protocol":"aijiasu-stdio-v1","ok":false,"error":"爱加速登录失败，请检查账号密码和账号允许的并行数量。"}
-```
-
-插件控制器可离线安装，但首次启动仍需 Docker CLI、Compose、运行中的本机 daemon，以及下载基础镜像和官方 Linux 客户端所需的网络。此模式不会自动安装 Docker。
-
-在本项目构建独立发布包（不会运行 Docker、登录或连接节点）：
-
-```sh
-python3 tools/build_provider.py
-# 输出 dist/provider/darwin-arm64/{manifest.json,aijiasu}
-go test ./cmd/aijiasu -run '^TestEmbedded' -count=1
-```
-
-发布脚本先构建 macOS arm64 二进制，再执行 ad-hoc 签名和验证，最后计算 SHA-256 写入清单。桌面仓库只接收该发布目录并校验固定清单/哈希，不导入本项目源码，也不依赖相邻 checkout 的路径。发布到其他电脑前，发行方应接入自己的正式签名和发布流程；已有产物目录不会被脚本覆盖，可通过 `--output` 指定新的目录。
-
-本项目是将**爱加速 (Aijiasu)** 官方 Linux 客户端容器化封装的独立 SOCKS5 代理服务。管理端采用 **Go 原生独立二进制工具**，砍掉了臃肿的端口自动嗅探与复杂多端口映射机制，返璞归真，专注于**高可用、低延迟、省市节点精准切换与智能去重**。
-
-支持 ARM64 (Apple Silicon Mac) 与 AMD64 (x86_64 Linux/Windows) 双架构，对外提供统一稳定的本地 SOCKS5 代理端口（`127.0.0.1:1080`），供自动化脚本、数据采集、爬虫及各类业务服务无感连接。
+版本变更见 [更新日志](CHANGELOG.md)。
 
 ---
 
@@ -87,33 +29,18 @@ go test ./cmd/aijiasu -run '^TestEmbedded' -count=1
                             [ 全国静态节点网络 ]
 ```
 
-- **对外代理端口**：固定为 `127.0.0.1:1080` (标准 SOCKS5 协议，免密直连)。
-- **自适应内部端口兼容**：底层自动探测爱加速客户端实际监听端口（兼容默认 `18888`、残留占用的 `28888`/`38888` 或直接监听的 `1080`），单次自适应桥接，无需常驻后台守护，零冗余开销。
-- **核心控制端**：独立 Go 原生命令行管理工具 `./aijiasu` 与轻量 HTTP 切换 API。
+- **代理端口**：默认在宿主机 `127.0.0.1:1080` 提供免密 SOCKS5；可通过 `.env` 修改绑定地址和端口。
+- **内部桥接**：启动和切换节点时探测客户端监听端口，并将容器的 `1080` 端口桥接过去；没有持续监测进程。
+- **管理方式**：使用 `./aijiasu` 命令行，或按需启动 HTTP API。
 
 ---
 
 ## 核心特性
 
-1. **底层端口变动无感自适应**：
-   - 彻底砍掉了复杂的后台轮询守护进程与虚拟多端口分发器；
-   - 切换节点时自动探知底层实际监听的本地端口（`18888`、`28888`、`1080` 等），毫秒级热桥接，保证宿主机 `127.0.0.1:1080` 始终畅通。
-2. **精准切换接口**：
-   - **按省份切换**：指定省份（如广东、山东、浙江等），在省内节点中智能挑选。
-   - **按城市切换**：指定城市（如广州、深圳、枣庄、杭州等），精准定位城市节点。
-   - **按特定节点直连**：支持输入具体节点全称（如 `上海 #116`）或节点 ID（`vvn-xxxx`）。
-   - **全局随机轮换**：不传参数时从全国可用节点中随机选取。
-3. **智能去重防重复**：
-   - 记录历史已用节点，每次切换优先从未使用的候选节点中挑选，**彻底避免频繁重复命中同一个节点/IP**。
-   - 当某省份/城市或全部节点被完整使用一轮后，**自动重置该分类历史**并开启新一轮轮换（同时避开上一个刚使用的节点）。
-   - 支持一键清空去重历史。
-4. **CLI + HTTP 双模支持**：
-   - 既可通过终端命令行 `./aijiasu switch` 一键换 IP；
-   - 也支持运行 `./aijiasu serve` 启动轻量本地 HTTP API，供各类爬虫或后台服务直接通过 `GET /switch` 发起换 IP 请求。
-5. **单一二进制自举开箱即用 (Zero-Dependency Self-Bootstrapping)**：
-   - 全套 Docker 运行资产（`docker-compose.yml`、`Dockerfile`、`entrypoint.sh`、时区文件等）全部内置于单个 `./aijiasu` 二进制中；
-   - **交互式安全确认**：在全新目录下执行 `./aijiasu up` 时，若检测到缺失 Docker 文件，会自动交互提示用户确认 `[y/N]`，用户输入 `y` 才会生成并启动，输入其他则安全退出；
-   - **绝对不覆盖已有配置**：若当前目录已有配置文件，直接复用启动，绝不会覆盖用户的任何自定义修改。
+- 按省份、城市、节点名称或 ID 筛选并连接节点；不指定条件时从可用节点中随机选择。
+- 将已选节点 ID 记入 `.aijiasu_history.json`，优先选择尚未记录的节点；用 `./aijiasu reset` 清空记录。不同节点可能共用出口 IP。
+- `./aijiasu serve` 按需启动 JSON API；它默认不随容器启动。
+- 二进制内置 Docker 运行文件模板。缺少文件时，`./aijiasu up` 会询问是否生成；已有文件不会被覆盖。
 
 ---
 
@@ -121,49 +48,64 @@ go test ./cmd/aijiasu -run '^TestEmbedded' -count=1
 
 ```
 aijiasu-docker/
-├── aijiasu                 # Go 编译生成的原生独立二进制工具 (直接运行)
-├── Dockerfile              # 双架构轻量 Dockerfile (Ubuntu 22.04 + ajiasu + socat)
-├── docker-compose.yml      # Docker Compose 服务配置
-├── entrypoint.sh           # 容器入口：自动登录、固定端口转发与待命
-├── .env.example            # 环境变量模板
-├── .env                    # 账号密码配置文件 (请勿提交到 Git)
-├── Makefile                # 一键编译命令
-├── go.mod                  # Go 模块描述
+├── aijiasu                 # make build 生成，不纳入 Git
+├── Dockerfile              # Ubuntu 22.04、官方客户端、socat
+├── docker-compose.yml      # 普通模式的容器配置
+├── entrypoint.sh           # 普通模式的容器入口
+├── .env.example            # 配置模板
+├── .env                    # 本地账号配置，不纳入 Git
+├── CHANGELOG.md            # 发布日志
+├── Makefile                # Go 构建入口
+├── go.mod
 ├── conf/
-│   └── localtime           # Asia/Shanghai 中国时区文件
-└── cmd/
-    └── aijiasu/
-        ├── main.go         # 核心控制端源码 (含省市映射、去重算法、CLI与HTTP API)
-        └── main_test.go    # 单元测试 (覆盖省市识别与去重算法)
+│   └── localtime
+├── cmd/aijiasu/
+│   ├── main.go             # 普通 CLI 与 HTTP API
+│   ├── bootstrap.go        # Docker 文件模板及自举
+│   ├── embedded.go         # 桌面插件的标准输入输出协议
+│   └── *_test.go
+└── tools/                  # 多平台管理端与 macOS 插件发布脚本
 ```
 
 ---
 
 ## 快速上手
 
-### 1. 配置账号与自定义参数
+### 1. 下载或构建管理端
+
+可从 [GitHub Releases](https://github.com/axe-browser/aijiasu-docker/releases) 下载与宿主操作系统和架构对应的压缩包。仓库不跟踪编译后的二进制。使用发布包无需 Go；从源码构建需要 Go 1.26.5 或更新版本：
+
+```bash
+# Linux / macOS
+make build
+
+# Windows PowerShell
+go build -o aijiasu.exe ./cmd/aijiasu
+```
+
+运行还需 Docker CLI、Docker Compose 插件和运行中的本机 Docker daemon；Windows 使用 Docker Desktop 的 Linux 容器模式。首次构建容器时，还需网络访问 Ubuntu 软件源及爱加速官方客户端下载地址。
+
+### 2. 配置账号
 
 复制 `.env.example` 为 `.env`：
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
-编辑 `.env`（支持自定义代理端口、绑定 IP 与 Web 服务端口等）：
+Windows PowerShell 可执行 `Copy-Item .env.example .env`，并限制该文件的访问权限。
+
+把模板中的示例账号和密码换成自己的。以下端口均使用默认值；修改 `AIJIASU_PROXY_PORT` 后，后文的代理地址也要同步替换。
+
 ```env
-# 1. 账号与密码 (必填或通过 API/CLI 登录)
-AIJIASU_USER=你的手机号/账号
+AIJIASU_USER=你的账号
 AIJIASU_PASS=你的密码
-
-# 2. 宿主机 SOCKS5 代理端口 (默认 1080，可自定义为 1090、21080 等避免端口冲突)
-AIJIASU_PROXY_PORT=1090
-
-# 3. 宿主机代理监听绑定 IP (默认 127.0.0.1 仅本机可用；设为 0.0.0.0 供局域网其他机器使用)
+AIJIASU_PROXY_PORT=1080
 AIJIASU_BIND_IP=127.0.0.1
-
-# 4. Web JSON API 服务端口 (默认 1081)
-AIJIASU_HTTP_PORT=1081
 ```
+
+普通模式会通过 Docker Compose 将 `.env` 中的变量传入容器，账号信息也会保存在容器配置中。请限制 `.env` 文件和 Docker daemon 的访问权限。
 
 | 环境变量名 | 默认值 | 作用说明 |
 |---|---|---|
@@ -171,50 +113,40 @@ AIJIASU_HTTP_PORT=1081
 | `AIJIASU_PASS` | - | 爱加速登录密码 |
 | `AIJIASU_PROXY_PORT` | `1080` | 宿主机 SOCKS5 代理暴露端口 (如 `1090`) |
 | `AIJIASU_BIND_IP` | `127.0.0.1` | 宿主机代理绑定的 IP 地址 (如 `0.0.0.0`) |
-| `AIJIASU_HTTP_PORT` | `1081` | Web JSON API 接口服务监听端口 |
+| `AIJIASU_HTTP_PORT` | `1081` | `serve` 命令的 HTTP 端口；不控制监听地址 |
 | `AIJIASU_CONTAINER_NAME` | `aijiasu-runner` | 自定义 Docker 容器名称 |
 | `AIJIASU_DEFAULT_NODE` | 留空 | 开机默认节点 (留空表示纯待命，不自动连接任何节点) |
 | `AIJIASU_RESTART` | `unless-stopped` | 容器重启策略 (默认推荐 `unless-stopped`) |
 
-#### 深度说明 1：默认节点与待命机制 (`AIJIASU_DEFAULT_NODE`)
-- **开机不自动连接（默认行为）**：
-  如果 `AIJIASU_DEFAULT_NODE` 保持留空（未配置），容器启动后**绝对不会自动连接任何节点**，保持纯净待命状态，无任何公网流量消耗。
-- **按需连接**：
-  由前端、爬虫或业务脚本通过 Web API（`POST /switch`）或命令行（`./aijiasu switch`）按需触发切换。
-- **固定初始节点（可选）**：
-  仅当确实需要在开机瞬间就固定连入某个特定节点时，才填写此项（例如：`AIJIASU_DEFAULT_NODE=上海 #1` 或指定节点 ID）。
+#### 默认节点与待命
 
-#### 深度说明 2：容器重启策略 (`AIJIASU_RESTART`)
-Docker 的容器重启并非简单的 `true/false` 开关，而是精细的**状态机策略**：
-- **`unless-stopped` (本项目默认，强烈推荐)**：
-  - **自愈恢复**：运行中遇到客户端闪退、异常崩溃，或者宿主机重启、Docker Desktop 重启时，会自动重新拉起；
-  - **尊重手动关机**：如果用户主动执行了 `./aijiasu down` 或 `docker stop`，Docker 会记住此状态，下次机器开机或重启 Docker 时**绝不会**自作主张强行启动，体验最自然。
-- **`always` (无条件重启)**：
-  - 无论正常退出还是异常崩溃，Docker 都会无条件反复尝试拉起；即使手动执行了 `docker stop`，在下次 Docker 服务重启时它依然会被强制再次启动。
-- **`on-failure` (仅报错崩溃时重启)**：
-  - 只有当容器以非零状态码退出（如闪退、异常报错崩溃）时才会重启；如果程序是正常执行结束（退出码 0），Docker 不会重启它。
-- **`no` (相当于 false，不重启)**：
-  - 容器一旦退出无论原因均不再重启，适合本地测试或一次性执行任务。
+`AIJIASU_DEFAULT_NODE` 留空时，容器启动后会尝试登录，但不会自动连接节点。此时代理端口通常尚不可用；运行 `./aijiasu switch` 后再检查代理。需要启动时连接固定节点，可在 `.env` 中填写节点名称或 ID。
 
-### 2. 启动服务与状态检查
+#### 容器重启策略
+
+`AIJIASU_RESTART` 默认是 `unless-stopped`，也可设为 `always`、`on-failure` 或 `no`。重启策略只在容器主进程退出时生效。入口脚本会持续运行，因此客户端或桥接进程单独失效时，Docker 不一定重启容器；可用 `./aijiasu status` 检查代理状态。
+
+### 3. 启动、连接和验证
 
 ```bash
 # 启动 Docker 容器 (后台运行)
 ./aijiasu up
 
-# 检查服务状态
+# 默认没有连接节点，此时检查状态可能显示代理未就绪
 ./aijiasu status
+
+# 连接可用节点后再次检查
+./aijiasu switch -p 广东
+./aijiasu status
+curl --proxy socks5h://127.0.0.1:1080 https://myip.ipip.net
 ```
 
-输出示例：
-```text
-=== 爱加速 Docker 代理服务状态检查 ===
-Docker CLI:        ✅ 就绪
-Docker Daemon:     ✅ 就绪
-容器状态 (aijiasu-runner): ✅ 就绪
-爱加速登录状态:           ✅ 就绪
-SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
-当前出口 IP:       113.108.88.xx 来自于：中国 广东 广州 联通
+Windows PowerShell 中将 `./aijiasu` 换成 `.\aijiasu.exe`。例如：
+
+```powershell
+.\aijiasu.exe up
+.\aijiasu.exe switch -p 广东
+.\aijiasu.exe status
 ```
 
 ---
@@ -228,7 +160,7 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 | **指定省份** | `./aijiasu switch -p <省份>` | `./aijiasu switch -p 广东` 或 `./aijiasu switch 广东` |
 | **指定城市** | `./aijiasu switch -c <城市>` | `./aijiasu switch -c 深圳` 或 `./aijiasu switch 深圳` |
 | **同时指定省市** | `./aijiasu switch -p <省> -c <市>` | `./aijiasu switch -p 广东 -c 广州` |
-| **指定特定节点** | `./aijiasu switch -n <节点名称/ID>` | `./aijiasu switch -n "上海 #116"` 或 `./aijiasu switch "上海 #116"` |
+| **指定特定节点** | `./aijiasu switch -n <节点名称/ID>` | `./aijiasu switch -n "上海 #116"` |
 | **全局随机切换** | `./aijiasu switch` | `./aijiasu switch` |
 | **清空历史并切换** | `./aijiasu switch -r [其他参数]` | `./aijiasu switch -r 广东` |
 
@@ -247,38 +179,37 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 
 ### 2. 去重机制说明
 
-1. 每次切换节点时，系统会自动在当前匹配的省份/城市候选池中，**排除已使用过的节点**，优先随机挑选全新节点。
+1. 每次切换时，优先从当前候选池中选择尚未记录的节点 ID。去重按节点 ID 进行，不保证出口 IP 不重复。
 2. 剩余未用节点数会在切换结果中实时反馈（例如：`候选池共 32 个节点 | 本轮剩余未用 31 个节点`）。
 3. 当该分类下的所有节点完整使用过一轮后，系统会自动重置轮换历史并提示：
    ```text
    💡 [去重轮换] 该范围内的所有可用节点已全部使用过一轮，已自动开启新一轮轮换！
    ```
-   同时新一轮挑选会自动避开上一轮最后一个使用的节点，确保绝不连续重复。
+   候选池多于一个节点时，新一轮会避开上次选中的节点；只有一个节点时仍会重复。
 4. 如需立即清空去重历史，可随时运行：
    ```bash
    ./aijiasu reset
    ```
 
+当前实现会在连接验证前记录选中的节点。因此，切换失败也可能占用一次去重记录；需要重新选择时可执行 `./aijiasu reset`。
+
 ---
 
 ## Web API 接口服务 (`./aijiasu serve`)
 
-> [!IMPORTANT]
-> **API Server 默认不启动**：
-> 启动 Docker 服务（`./aijiasu up` 或 `docker compose up`）仅运行纯净的 SOCKS5 代理容器（`1080` 端口），**绝不会在后台默认启动任何 Web API 服务**，彻底杜绝端口占用与多余系统资源开销。
-> 只有当您需要通过 HTTP 接口换 IP 时，才显式通过 `./aijiasu serve` 按需启动。
+API 默认不随容器启动。执行 `./aijiasu serve` 后，服务会监听 **`0.0.0.0:1081`**（或指定端口），且当前接口没有鉴权或 HTTPS。请通过防火墙限制端口访问，仅在可信环境使用；不要把 API 直接暴露到公网。接口响应使用 JSON 的 `success` 字段表示操作结果，失败也可能返回 HTTP 200。
 
 ```bash
-# 按需启动 Web JSON API 服务 (默认监听 1081 端口，可自定义端口如 ./aijiasu serve 8080)
+# 按需启动，默认端口 1081；也可执行 ./aijiasu serve 8080
 ./aijiasu serve
 ```
 
 ### 核心接口列表
 
 #### 1. 登录认证接口 (`POST /login` 或 `POST /api/login`)
-向爱加速客户端安全注入账号与密码凭据并完成认证：
+登录爱加速账号。优先在本机通过 `.env` 和 `./aijiasu login` 完成登录；如需调用此接口，只在受信网络中使用 POST 请求。登录成功后，程序会尝试把提交的账号密码写入宿主机 `.env`；即使写入失败，接口也可能返回登录成功。
 - **请求方式**：`POST /login`
-- **请求体（支持 JSON / Form 表单 / 自动读取 .env）**：
+- **请求体（支持 JSON、表单；未提供时读取 `.env`）**：
   - JSON Body 示例：
     ```json
     {
@@ -286,6 +217,7 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
       "password": "your_password"
     }
     ```
+  - 当前实现也兼容 URL 查询参数中的账号和密码，但 URL 容易进入浏览器历史及访问日志，不建议使用。
 - **返回规范**：
   - **登录成功**：
     ```json
@@ -305,6 +237,7 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 #### 2. 节点列表查询接口 (`GET /nodes` 或 `GET /api/nodes`)
 提供节点的 `id`、`province`（省份）、`city`（市区）、`number`（编号）等结构化信息，供调用方或前端自行选择：
 - **请求方式**：`GET /nodes`（支持参数 `?province=广东&city=广州`）
+- 如果容器尚未运行，查询会尝试启动容器。
 - **返回示例**：
 ```json
 {
@@ -335,7 +268,8 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 根据传入的节点 ID、特定节点名称或省市范围执行切换与去重。
 - **请求方式**：`POST /switch`（支持 JSON Body 或 URL Query 参数）
   - JSON Body 示例：`{"id": "vvn-1024-8891"}` 或 `{"province": "广东", "city": "广州"}`
-  - URL Query 示例：`/switch?id=vvn-1024-8891` 或 `/switch?city=广州`
+  - 兼容 GET，例如 `/switch?id=vvn-1024-8891`；调用方应优先使用 POST。
+- 普通模式共用一个容器；不要并发发起切换或断开请求。
 - **返回规范（严格约定）**：
   - **切换成功时返回**：
     ```json
@@ -374,6 +308,7 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
     ```
 
 #### 5. 辅助状态查询接口 (`GET /status`)
+- 代理握手失败时，状态检查可能尝试重新建立容器内端口桥接。
 - **返回示例**：
 ```json
 {
@@ -396,7 +331,7 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 
 | 命令 | 说明 | 示例 |
 |---|---|---|
-| `./aijiasu login [账号] [密码]` | 登录爱加速账号 (支持传参或读取 .env) | `./aijiasu login 13800000000 123456` |
+| `./aijiasu login` | 从 `.env` 读取账号并登录；避免将密码放入命令参数 | `./aijiasu login` |
 | `./aijiasu switch [参数]` | 核心切换命令，支持省、市、节点及自动去重 | `./aijiasu switch 广州` |
 | `./aijiasu serve [端口]` | 启动 HTTP 切换 API 服务 | `./aijiasu serve 1081` |
 | `./aijiasu reset` | 手动清空去重历史记录 | `./aijiasu reset` |
@@ -412,25 +347,34 @@ SOCKS5 代理端口:   ✅ 127.0.0.1:1080 畅通
 
 ## 业务服务调用示例
 
-代理连接地址恒定为：**`socks5://127.0.0.1:1080`**
+以下示例使用默认代理地址 `socks5://127.0.0.1:1080`。修改绑定地址或端口后请同步修改示例。
 
 ### Python (结合 HTTP API 自动换 IP)
+
+需要安装 `requests[socks]`，并单独运行 `./aijiasu serve`。HTTP API 仅限可信环境使用。
+
+```bash
+python3 -m pip install 'requests[socks]'
+```
+
 ```python
 import requests
 
 # 1. 调用 HTTP 接口切换至广东广州
-switch_resp = requests.post("http://127.0.0.1:1081/switch", json={"city": "广州"}).json()
-if switch_resp.get("success"):
-    print("切换成功，当前出口 IP:", switch_resp.get("ip"))
-else:
-    print("切换失败:", switch_resp.get("msg"))
+switch_response = requests.post("http://127.0.0.1:1081/switch", json={"city": "广州"}, timeout=30)
+switch_response.raise_for_status()
+switch_result = switch_response.json()
+if not switch_result.get("success"):
+    raise RuntimeError(f"切换失败: {switch_result.get('msg')}")
+print("切换成功，当前出口 IP:", switch_result.get("ip"))
 
 # 2. 通过 1080 SOCKS5 代理采集目标数据
 proxies = {
-    "http": "socks5://127.0.0.1:1080",
-    "https": "socks5://127.0.0.1:1080",
+    "http": "socks5h://127.0.0.1:1080",
+    "https": "socks5h://127.0.0.1:1080",
 }
-resp = requests.get("https://myip.ipip.net", proxies=proxies)
+resp = requests.get("https://myip.ipip.net", proxies=proxies, timeout=10)
+resp.raise_for_status()
 print("当前请求 IP:", resp.text.strip())
 ```
 
@@ -441,4 +385,92 @@ print("当前请求 IP:", resp.text.strip())
 
 # 验证代理
 curl -x socks5h://127.0.0.1:1080 https://myip.ipip.net
+```
+
+---
+
+## 斧头浏览器插件模式
+
+桌面端可使用 `./aijiasu embedded` 托管多个独立代理实例。正式插件包目前只提供 macOS arm64；Windows 管理端仅支持普通 CLI，`embedded` 会返回不支持错误。此模式仅通过标准输入/输出通信，不启动 HTTP 服务，不读取或保存宿主机 `.env`，也不会接管普通 CLI 创建的容器。
+
+宿主向 stdin 写入一个 JSON 对象并关闭输入；插件输出唯一 JSON 响应并退出。协议是 `aijiasu-stdio-v1`：
+
+```json
+{
+  "protocol": "aijiasu-stdio-v1",
+  "action": "start",
+  "dataDir": "/absolute/private/runtime/1",
+  "instanceId": "axe-aijiasu-123456789abc-1",
+  "instanceIndex": 1,
+  "proxyPort": 21081,
+  "dockerPath": "/absolute/path/to/docker",
+  "username": "YOUR_ACCOUNT",
+  "password": "YOUR_PASSWORD"
+}
+```
+
+- 每个请求都需要 `protocol`、`action`、`dataDir`、`instanceId`、`instanceIndex`、`proxyPort` 和 `dockerPath`。`action` 支持 `start`、`status`、`stop`、`nodes`、`switch`；`proxyPort` 为 1024–65535。`instanceId` 格式为 `axe-aijiasu-<12 位小写十六进制>-<instanceIndex>`，索引范围为 1–20。
+- `username` 和 `password` 仅允许出现在 `start` 请求中，`nodeId` 仅允许用于 `start` 或 `switch`，其中 `switch` 必须提供 `nodeId`。凭据通过管道传递，不放入命令行参数或环境变量；容器内会将其保存到权限为 `0600` 的配置文件。
+- 宿主须先确认 Docker daemon 为本机实例，再把 `DOCKER_HOST=unix:///绝对路径` 传入插件。插件校验的是本机 Unix socket URI 格式，daemon 的身份仍由宿主确认；传给 Docker 的环境中不含 `DOCKER_CONTEXT`。Docker Desktop 未运行时由桌面宿主负责启动并等待就绪。
+- `dataDir` 是该实例专属的绝对目录；首次启动只能使用不存在或空目录。目录标记、Compose 项目、容器名称、归属 label 和本机端口必须匹配，否则拒绝接管。目录路径不能包含符号链接。
+- `instanceIndex` 是桌面端的资源索引，不代表账号许可的并发数。`start` 可附带 `nodeId` 精确选择节点；未指定时选择实时可用节点列表中的第 `instanceIndex` 项（从 1 开始）。节点列表可能变化，多个节点也不保证出口 IP 不同。
+- `start` 非交互生成自己的 Docker 资源，构建镜像、启动容器、通过 `docker exec -i` 向容器内权限为 `0600` 的配置注入凭据并登录，再连接节点。托管容器使用单独的待命入口，不执行普通 CLI 启动脚本的自动登录/默认连接。只有 SOCKS5 握手成功才返回 `running`。普通启动失败或超时后尝试停止已验证归属的容器，并报告无法确认清理的情况。
+- 关闭桌面导致的 SIGTERM/取消只终止当前 Docker 控制命令，保留已创建的代理容器，避免中断浏览器环境；下次打开可通过 `status` 检查。启动尚未完成时被取消的容器可能处于未连接状态，须重新启动或显式停止。
+- `nodes` 查询已启动并登录实例的实时可用节点，返回 `nodes:[{id,name,province,city}]`；未启动时明确报错。`switch` 必须提供完整的 `nodeId`，只连接当前列表中 ID 完全匹配的节点，成功后返回更新的 `instance`。这两项操作不接受账号密码。
+- `status` 仅检查实例与代理健康，通过容器内监听进程的命令行核验当前节点，健康时通过该代理查询出口 IP；不会启动容器或修复桥接。当前节点无法核实时返回 `status:error`，不会将历史记录当作当前节点。出口 IP 查询失败时 `exitIp` 为 `""`。`stop` 只停止此实例容器，保留运行数据、镜像及其他 Docker 容器。不存在的实例返回 `stopped`。
+- Docker 命令有限时和输出大小限制；`start` 总限时 9 分钟，`switch` 90 秒，其他操作 35 秒。协议错误以 `ok:false` 和中文消息返回，进程正常退出 `0`。`ok:true` 只表示请求处理成功；`status` 或 `nodes` 的 `instance.status` 仍可能是 `error`，调用方需同时检查该字段。
+
+成功响应：
+
+```json
+{"protocol":"aijiasu-stdio-v1","ok":true,"instance":{"id":"axe-aijiasu-123456789abc-1","status":"running","proxy":"socks5://127.0.0.1:21081","exitIp":"203.0.113.10","nodeId":"vvn-example"}}
+```
+
+`nodes` 成功响应沿用同一协议，并附带节点列表；`switch` 使用上面的实例响应格式：
+
+```json
+{"protocol":"aijiasu-stdio-v1","ok":true,"instance":{"id":"axe-aijiasu-123456789abc-1","status":"running","proxy":"socks5://127.0.0.1:21081","exitIp":"203.0.113.10","nodeId":"vvn-example"},"nodes":[{"id":"vvn-example","name":"广东广州 #01","province":"广东","city":"广州"}]}
+```
+
+失败响应：
+
+```json
+{"protocol":"aijiasu-stdio-v1","ok":false,"error":"爱加速登录失败，请检查账号密码和账号允许的并行数量。"}
+```
+
+插件控制器可离线安装，但首次启动仍需 Docker CLI、Compose、运行中的本机 daemon，以及下载基础镜像和官方 Linux 客户端所需的网络。此模式不会自动安装 Docker。
+
+发布脚本仅支持在 macOS 上生成 arm64 包，需安装 Go 工具链，并提供系统自带的 `lipo` 与 `codesign`。构建不会运行 Docker、登录或连接节点：
+
+```sh
+python3 tools/build_provider.py
+# 输出 dist/provider/darwin-arm64/{manifest.json,aijiasu}
+go test ./cmd/aijiasu -run '^TestEmbedded' -count=1
+```
+
+发布脚本先构建 macOS arm64 二进制，再执行 ad-hoc 签名和验证，最后计算 SHA-256 写入清单。已有产物目录不会被覆盖，可通过 `--output` 指定新目录。ad-hoc 签名不等于正式发行签名；跨设备发布前应接入正式签名与分发流程。
+
+---
+
+## 构建 GitHub Release 附件
+
+在 macOS 上执行以下命令，可一次生成六个平台的管理端 ZIP、macOS arm64 桌面插件 ZIP 和 `SHA256SUMS`。脚本只构建文件，不运行 Docker 或登录账号；默认写入系统临时目录，`--output` 可指定一个尚不存在的目录。
+
+```bash
+python3 tools/build_release.py --version 1.0.0 --with-provider
+```
+
+仅构建六个平台的普通管理端时可省略 `--with-provider`。发布内容和已知限制见 [更新日志](CHANGELOG.md)。
+
+---
+
+## 开发验证
+
+以下检查不启动容器；实际登录和代理连通性仍需用有效账号及运行中的 Docker 验证。
+
+```bash
+go test ./...
+go vet ./...
+bash -n entrypoint.sh
+docker compose config --quiet
 ```
