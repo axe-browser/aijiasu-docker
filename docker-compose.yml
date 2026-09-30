@@ -4,13 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile
     image: aijiasu-runner:latest
-    container_name: aijiasu-runner
+    container_name: ${AIJIASU_CONTAINER_NAME:-aijiasu-runner}
     init: true
-    restart: unless-stopped
+    restart: ${AIJIASU_RESTART:-unless-stopped}
     ports:
-      - "127.0.0.1:${AIJIASU_BACKEND_PORT:-1079}:1080"
+      - "${AIJIASU_BIND_IP:-127.0.0.1}:${AIJIASU_PROXY_PORT:-1080}:1080"
     environment:
-      - TZ=Asia/Shanghai
+      - TZ=${TZ:-Asia/Shanghai}
+      - AIJIASU_DEFAULT_NODE=${AIJIASU_DEFAULT_NODE:-}
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./conf/localtime:/etc/localtime:ro
       - ./conf/localtime:/usr/share/zoneinfo/Asia/Shanghai:ro

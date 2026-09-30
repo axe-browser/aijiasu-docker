@@ -7,6 +7,7 @@ conf/.auth.enc
 # 编译二进制产物 (仅限根目录与构建输出)
 /aijiasu
 /bin/aijiasu
+/dist/provider/
 
 # 运行时日志与进程文件
 *.log
@@ -18,3 +19,8 @@ dispatcher.pid
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
+*.pyc
+
+# 节点切换去重记录
+.aijiasu_history.json

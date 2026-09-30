@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     curl \
     iproute2 \
+    coreutils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY conf/localtime /etc/localtime

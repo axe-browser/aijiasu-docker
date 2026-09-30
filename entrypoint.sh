@@ -42,50 +42,30 @@ fi
 
 # 检查是否指定了开机自动连接的节点
 if [ -n "$AIJIASU_DEFAULT_NODE" ]; then
-    echo "[aijiasu-docker] 正在连接默认节点: $AIJIASU_DEFAULT_NODE..."
+    echo "[aijiasu-docker] 检测到配置了开机默认节点，正在连接: $AIJIASU_DEFAULT_NODE..."
     ajiasu connect "$AIJIASU_DEFAULT_NODE" || true
+else
+    echo "[aijiasu-docker] 未配置默认节点 (AIJIASU_DEFAULT_NODE 留空)，容器保持待命状态，等待按需连接..."
 fi
 
-# 动态端口桥接同步函数
-sync_bridge() {
-    local target_port="${1:-18888}"
-    local detected_port
-    detected_port=$(ss -H -lntp 2>/dev/null | grep -E '"ajiasu"' | awk '{print $4}' | grep -oE '[0-9]+$' | grep -v '^1080$' | head -n1 || true)
-    
-    if [ -n "$detected_port" ]; then
-        target_port="$detected_port"
-    fi
+# 检查并探测实际内部端口 (默认 18888，兼容 1080、28888、38888 等)
+INTERNAL_PORT=$(ss -H -lntp 2>/dev/null | grep -E '"ajiasu"' | awk '{print $4}' | grep -oE '[0-9]+$' | head -n1 || true)
+if [ -z "$INTERNAL_PORT" ]; then
+    INTERNAL_PORT=18888
+fi
 
-    if ps -ef | grep -v grep | grep -q "socat TCP-LISTEN:1080.*TCP:127.0.0.1:$target_port"; then
-        return 0
-    fi
-
-    echo "[aijiasu-docker] 配置端口转发: 0.0.0.0:1080 -> 127.0.0.1:$target_port..."
+if [ "$INTERNAL_PORT" != "1080" ]; then
+    echo "[aijiasu-docker] 启动 SOCKS5 代理端口桥接: 0.0.0.0:1080 -> 127.0.0.1:$INTERNAL_PORT..."
     pkill -f 'socat TCP-LISTEN:1080' || true
-    sleep 0.1
-    socat TCP-LISTEN:1080,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:$target_port &
-}
+    socat TCP-LISTEN:1080,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:$INTERNAL_PORT &
+else
+    echo "[aijiasu-docker] 检测到爱加速内部直接监听 1080 端口，无需额外的 socat 桥接。"
+fi
 
-# 初始建立桥接
-sync_bridge 18888
-
-# 启动后台守护：监控内部实际端口变动并自愈（兼容 18888、28888、38888 等动态端口）
-(
-    while true; do
-        sleep 3
-        current_port=$(ss -H -lntp 2>/dev/null | grep -E '"ajiasu"' | awk '{print $4}' | grep -oE '[0-9]+$' | grep -v '^1080$' | head -n1 || true)
-        if [ -n "$current_port" ]; then
-            if ! ps -ef | grep -v grep | grep -q "socat TCP-LISTEN:1080.*TCP:127.0.0.1:$current_port"; then
-                echo "[aijiasu-docker] 检测到爱加速内部端口变更为 $current_port，正在重定向 1080 桥接..."
-                pkill -f 'socat TCP-LISTEN:1080' || true
-                sleep 0.1
-                socat TCP-LISTEN:1080,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:$current_port &
-            fi
-        fi
-    done
-) &
-
-echo "[aijiasu-docker] 爱加速 Docker 代理服务已就绪，端口动态自适应守护已启动。"
+echo "[aijiasu-docker] 爱加速 Docker 代理服务已就绪 (对外监听端口 1080)。"
 
 # 持续前台阻塞
-exec tail -f /dev/null
+while true; do
+    sleep 86400 &
+    wait $!
+done
