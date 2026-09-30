@@ -1,0 +1,25 @@
+services:
+  aijiasu-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aijiasu-runner:latest
+    container_name: aijiasu-runner
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${AIJIASU_BACKEND_PORT:-1079}:1080"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./conf/localtime:/etc/localtime:ro
+      - ./conf/localtime:/usr/share/zoneinfo/Asia/Shanghai:ro
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    cap_add:
+      - NET_ADMIN
