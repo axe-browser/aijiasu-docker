@@ -2,7 +2,7 @@
 
 本项目在 Docker 容器中运行爱加速官方 Linux 客户端，由 Go 命令行工具管理登录、节点切换和 SOCKS5 端口桥接。普通模式管理一个容器；[桌面插件模式](#斧头浏览器插件模式)可按实例管理多个容器。
 
-普通模式默认将代理映射到宿主机 `127.0.0.1:1080`。管理端提供 Linux、macOS、Windows 的 amd64 和 arm64 版本；桌面插件发布脚本目前只生成 macOS arm64 包。
+普通模式默认将代理映射到宿主机 `127.0.0.1:1080`。管理端提供 Linux、macOS、Windows 的 amd64 和 arm64 版本；桌面插件构建脚本目前只生成 macOS arm64 包。
 
 版本变更见 [更新日志](CHANGELOG.md)。
 
@@ -73,7 +73,30 @@ aijiasu-docker/
 
 ### 1. 下载或构建管理端
 
-可从 [GitHub Releases](https://github.com/axe-browser/aijiasu-docker/releases) 下载与宿主操作系统和架构对应的压缩包。仓库不跟踪编译后的二进制。使用发布包无需 Go；从源码构建需要 Go 1.26.5 或更新版本：
+可从 [GitHub Releases](https://github.com/axe-browser/aijiasu-docker/releases) 下载对应平台的单个二进制文件：
+
+| 系统 | amd64 | arm64 |
+|---|---|---|
+| Linux | `aijiasu-linux-amd64` | `aijiasu-linux-arm64` |
+| macOS | `aijiasu-macos-amd64` | `aijiasu-macos-arm64` |
+| Windows | `aijiasu-windows-amd64.exe` | `aijiasu-windows-arm64.exe` |
+
+Linux/macOS 下载后将文件重命名为 `aijiasu`，赋予执行权限，再运行 `init`。以下以 Linux amd64 为例，其他平台替换第一行的文件名：
+
+```bash
+mv aijiasu-linux-amd64 aijiasu
+chmod +x aijiasu
+./aijiasu init
+```
+
+Windows PowerShell 下载后可重命名并初始化（arm64 使用对应文件名）：
+
+```powershell
+Rename-Item .\aijiasu-windows-amd64.exe aijiasu.exe
+.\aijiasu.exe init
+```
+
+`init` 会在当前目录生成缺失的 Docker 运行文件和 `.env.example`，不会覆盖已有文件。仓库不跟踪编译后的二进制。使用发布的二进制无需 Go；从源码构建需要 Go 1.26.5 或更新版本：
 
 ```bash
 # Linux / macOS
@@ -391,7 +414,7 @@ curl -x socks5h://127.0.0.1:1080 https://myip.ipip.net
 
 ## 斧头浏览器插件模式
 
-桌面端可使用 `./aijiasu embedded` 托管多个独立代理实例。正式插件包目前只提供 macOS arm64；Windows 管理端仅支持普通 CLI，`embedded` 会返回不支持错误。此模式仅通过标准输入/输出通信，不启动 HTTP 服务，不读取或保存宿主机 `.env`，也不会接管普通 CLI 创建的容器。
+桌面端可使用 `./aijiasu embedded` 托管多个独立代理实例。v1.0.1 Release 不提供桌面插件包；历史 v1.0.0 Release 包含 macOS arm64 插件包。插件集成需单独构建 `aijiasu` 和 `manifest.json`。Windows 管理端仅支持普通 CLI，`embedded` 会返回不支持错误。此模式仅通过标准输入/输出通信，不启动 HTTP 服务，不读取或保存宿主机 `.env`，也不会接管普通 CLI 创建的容器。
 
 宿主向 stdin 写入一个 JSON 对象并关闭输入；插件输出唯一 JSON 响应并退出。协议是 `aijiasu-stdio-v1`：
 
@@ -454,13 +477,13 @@ go test ./cmd/aijiasu -run '^TestEmbedded' -count=1
 
 ## 构建 GitHub Release 附件
 
-在 macOS 上执行以下命令，可一次生成六个平台的管理端 ZIP、macOS arm64 桌面插件 ZIP 和 `SHA256SUMS`。脚本只构建文件，不运行 Docker 或登录账号；默认写入系统临时目录，`--output` 可指定一个尚不存在的目录。
+在 macOS 上执行以下命令可生成六个平台的管理端二进制文件，并对 macOS 文件进行 ad-hoc 签名。此签名不等于正式发行签名或公证。脚本只构建文件，不运行 Docker 或登录账号；默认写入系统临时目录，`--output` 可指定一个尚不存在的目录。
 
 ```bash
-python3 tools/build_release.py --version 1.0.0 --with-provider
+python3 tools/build_release.py --version 1.0.1
 ```
 
-仅构建六个平台的普通管理端时可省略 `--with-provider`。发布内容和已知限制见 [更新日志](CHANGELOG.md)。
+v1.0.1 Release 不包含普通管理端 ZIP、桌面插件 ZIP 或 `SHA256SUMS` 附件。需要桌面插件时，按[斧头浏览器插件模式](#斧头浏览器插件模式)单独构建。发布内容和已知限制见 [更新日志](CHANGELOG.md)。
 
 ---
 

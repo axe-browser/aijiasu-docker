@@ -662,7 +662,9 @@ func ensureContainerRunning() error {
 	}
 
 	// 启动前确保环境与挂载资产已就绪 (若缺失则交互询问用户是否生成)
-	_ = promptAndBootstrapAssets()
+	if err := promptAndBootstrapAssets(); err != nil {
+		return fmt.Errorf("初始化 Docker 环境资产失败: %w", err)
+	}
 
 	fmt.Printf("  ➜ [Docker 服务] 检测到爱加速容器 (%s) 未运行，正在启动...\n", container)
 	dir := getProjectDir()
@@ -1315,7 +1317,10 @@ func runHTTPServer(port int) {
 func forwardCompose(args ...string) {
 	// 如果是启动容器命令，检查是否缺失 Docker 配置文件并询问用户确认生成
 	if len(args) > 0 && (args[0] == "up" || args[0] == "restart" || args[0] == "build") {
-		_ = promptAndBootstrapAssets()
+		if err := promptAndBootstrapAssets(); err != nil {
+			fmt.Fprintf(os.Stderr, "初始化 Docker 环境资产失败: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	dir := getProjectDir()
 	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)

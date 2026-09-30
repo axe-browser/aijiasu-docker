@@ -20,7 +20,8 @@ func isMissingDockerAssets() bool {
 	}
 
 	for _, f := range checkFiles {
-		if _, err := os.Stat(f); os.IsNotExist(err) {
+		info, err := os.Stat(f)
+		if err != nil || !info.Mode().IsRegular() {
 			return true
 		}
 	}
@@ -71,50 +72,78 @@ func generateBootstrapAssets() error {
 	fmt.Println("➜ [自举初始化] 正在释放内置 Docker 环境配置文件...")
 
 	// 1. 生成 docker-compose.yml (已有则不覆盖)
-	if _, err := os.Stat(composePath); os.IsNotExist(err) {
-		if err := os.WriteFile(composePath, []byte(defaultComposeYAML), 0644); err == nil {
-			fmt.Println("  • 已自动生成: docker-compose.yml")
+	if info, err := os.Stat(composePath); os.IsNotExist(err) {
+		if err := os.WriteFile(composePath, []byte(defaultComposeYAML), 0644); err != nil {
+			return fmt.Errorf("生成 %s 失败: %w", composePath, err)
 		}
+		fmt.Println("  • 已自动生成: docker-compose.yml")
+	} else if err != nil {
+		return fmt.Errorf("检查 %s 失败: %w", composePath, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 已存在但不是普通文件", composePath)
 	} else {
 		fmt.Println("  • 已存在保持原样: docker-compose.yml (未覆盖)")
 	}
 
 	// 2. 生成 Dockerfile (已有则不覆盖)
-	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
-		if err := os.WriteFile(dockerfilePath, []byte(defaultDockerfile), 0644); err == nil {
-			fmt.Println("  • 已自动生成: Dockerfile")
+	if info, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		if err := os.WriteFile(dockerfilePath, []byte(defaultDockerfile), 0644); err != nil {
+			return fmt.Errorf("生成 %s 失败: %w", dockerfilePath, err)
 		}
+		fmt.Println("  • 已自动生成: Dockerfile")
+	} else if err != nil {
+		return fmt.Errorf("检查 %s 失败: %w", dockerfilePath, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 已存在但不是普通文件", dockerfilePath)
 	} else {
 		fmt.Println("  • 已存在保持原样: Dockerfile (未覆盖)")
 	}
 
 	// 3. 生成 entrypoint.sh (已有则不覆盖，必须带 0755 可执行权限)
-	if _, err := os.Stat(entrypointPath); os.IsNotExist(err) {
-		if err := os.WriteFile(entrypointPath, []byte(defaultEntrypointSH), 0755); err == nil {
-			fmt.Println("  • 已自动生成: entrypoint.sh (已赋予执行权限)")
+	if info, err := os.Stat(entrypointPath); os.IsNotExist(err) {
+		if err := os.WriteFile(entrypointPath, []byte(defaultEntrypointSH), 0755); err != nil {
+			return fmt.Errorf("生成 %s 失败: %w", entrypointPath, err)
 		}
+		fmt.Println("  • 已自动生成: entrypoint.sh (已赋予执行权限)")
+	} else if err != nil {
+		return fmt.Errorf("检查 %s 失败: %w", entrypointPath, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 已存在但不是普通文件", entrypointPath)
 	} else {
 		fmt.Println("  • 已存在保持原样: entrypoint.sh (未覆盖)")
 	}
 
 	// 4. 生成 conf/localtime 时区文件 (已有则不覆盖)
-	if _, err := os.Stat(localtimePath); os.IsNotExist(err) {
-		_ = os.MkdirAll(filepath.Join(dir, "conf"), 0755)
-		tzBytes, err := base64.StdEncoding.DecodeString(defaultLocaltimeBase64)
-		if err == nil {
-			if err := os.WriteFile(localtimePath, tzBytes, 0644); err == nil {
-				fmt.Println("  • 已自动生成: conf/localtime (Asia/Shanghai 时区文件)")
-			}
+	if info, err := os.Stat(localtimePath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(localtimePath), 0755); err != nil {
+			return fmt.Errorf("创建 %s 所在目录失败: %w", localtimePath, err)
 		}
+		tzBytes, err := base64.StdEncoding.DecodeString(defaultLocaltimeBase64)
+		if err != nil {
+			return fmt.Errorf("解码 %s 失败: %w", localtimePath, err)
+		}
+		if err := os.WriteFile(localtimePath, tzBytes, 0644); err != nil {
+			return fmt.Errorf("生成 %s 失败: %w", localtimePath, err)
+		}
+		fmt.Println("  • 已自动生成: conf/localtime (Asia/Shanghai 时区文件)")
+	} else if err != nil {
+		return fmt.Errorf("检查 %s 失败: %w", localtimePath, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 已存在但不是普通文件", localtimePath)
 	} else {
 		fmt.Println("  • 已存在保持原样: conf/localtime (未覆盖)")
 	}
 
 	// 5. 生成 .env.example (已有则不覆盖)
-	if _, err := os.Stat(envExamplePath); os.IsNotExist(err) {
-		if err := os.WriteFile(envExamplePath, []byte(defaultEnvExample), 0644); err == nil {
-			fmt.Println("  • 已自动生成: .env.example (配置模板)")
+	if info, err := os.Stat(envExamplePath); os.IsNotExist(err) {
+		if err := os.WriteFile(envExamplePath, []byte(defaultEnvExample), 0644); err != nil {
+			return fmt.Errorf("生成 %s 失败: %w", envExamplePath, err)
 		}
+		fmt.Println("  • 已自动生成: .env.example (配置模板)")
+	} else if err != nil {
+		return fmt.Errorf("检查 %s 失败: %w", envExamplePath, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s 已存在但不是普通文件", envExamplePath)
 	}
 
 	fmt.Println("➜ [自举完成] 核心运行资产已就绪！")

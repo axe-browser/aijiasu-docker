@@ -2,6 +2,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +222,82 @@ func TestBootstrapAssets(t *testing.T) {
 	content, _ := os.ReadFile("docker-compose.yml")
 	if string(content) != customCompose {
 		t.Fatalf("ensureBootstrapAssets should not overwrite existing files")
+	}
+}
+
+func TestBootstrapAssetsReportsWriteFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origWd)
+
+	// conf 应是目录；同名普通文件会阻止写入 conf/localtime。
+	if err := os.WriteFile("conf", []byte("occupied"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"docker-compose.yml", "Dockerfile", "entrypoint.sh"} {
+		if err := os.WriteFile(name, []byte("existing"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ensureBootstrapAssets(); err == nil || !strings.Contains(err.Error(), filepath.Join("conf", "localtime")) {
+		t.Fatalf("expected an error naming conf/localtime, got %v", err)
+	}
+}
+
+func TestForwardComposeStopsOnBootstrapFailure(t *testing.T) {
+	if os.Getenv("AIJIASU_BOOTSTRAP_TEST_CHILD") == "1" {
+		forwardCompose(os.Getenv("AIJIASU_BOOTSTRAP_TEST_ACTION"))
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake Docker executable is a shell script")
+	}
+
+	for _, action := range []string{"up", "restart", "build"} {
+		t.Run(action, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(tmpDir, "conf"), []byte("occupied"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"docker-compose.yml", "Dockerfile", "entrypoint.sh"} {
+				if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("existing"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fakeBin := filepath.Join(tmpDir, "bin")
+			if err := os.Mkdir(fakeBin, 0755); err != nil {
+				t.Fatal(err)
+			}
+			fakeDocker := filepath.Join(fakeBin, "docker")
+			if err := os.WriteFile(fakeDocker, []byte("#!/bin/sh\ntouch \"$AIJIASU_BOOTSTRAP_TEST_MARKER\"\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(tmpDir, "docker-called")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestForwardComposeStopsOnBootstrapFailure$")
+			cmd.Dir = tmpDir
+			cmd.Env = append(os.Environ(),
+				"AIJIASU_BOOTSTRAP_TEST_CHILD=1",
+				"AIJIASU_BOOTSTRAP_TEST_ACTION="+action,
+				"AIJIASU_BOOTSTRAP_TEST_MARKER="+marker,
+				"AIJIASU_ASSUME_YES=1",
+				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			)
+			output, err := cmd.CombinedOutput()
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+				t.Fatalf("expected exit status 1, got %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), filepath.Join("conf", "localtime")) {
+				t.Fatalf("expected failing asset path in output, got:\n%s", output)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("Docker must not run after bootstrap failure, marker stat: %v", err)
+			}
+		})
 	}
 }
